@@ -32,7 +32,7 @@ if #[cfg(any(
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 #[repr(transparent)] // transmute safe
-pub(crate) struct CpuFeatList<'a>(&'a [&'a str]);
+pub(crate) struct CpuFeatList<'a>(pub &'a [&'a str]);
 
 pub(crate) trait Features<'a> {
     fn get_features_lists(&'a self) -> &'a [CpuFeatList<'a>];
@@ -104,9 +104,9 @@ pub(crate) trait Executable: Sized {
 // to reduce compile-time.
 // Furthermore, it should allow zero-copy views for memory efficiency.
 pub(crate) struct FatBin<'a> {
-    default_exe: &'a [u8],
-    pub(crate) patches_features_lists: &'a [CpuFeatList<'a>],
-    patches: &'a [&'a [u8]],
+    pub default_exe: &'a [u8],
+    pub patches_features_lists: &'a [CpuFeatList<'a>],
+    pub patches: &'a [&'a [u8]],
 }
 
 /// A binary unbundled from a fat binary

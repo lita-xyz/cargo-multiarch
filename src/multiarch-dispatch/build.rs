@@ -124,9 +124,9 @@ impl Artifacts {
         let fatbin_raw = quote! {
             FatBin {
                 default_exe: &[#(#source),*],
-                patches_features_lists: &[#(#features_lists),*],
+                patches_features_lists: &[#(CpuFeatList(#features_lists)),*],
                 patches: &[#(#patches),*],
-            };
+            }
         };
 
         std::fs::write(dest_path, fatbin_raw.to_string()).map_err(|_| {

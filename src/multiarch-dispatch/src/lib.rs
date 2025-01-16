@@ -1,11 +1,11 @@
 #![no_main]
 #![feature(stdarch_internal)]
-#![feature(associated_type_defaults)]
+#![allow(internal_features)]
 
 use libc::c_char;
 use std::ffi::CStr;
 
-use binary_flavors::{FatBin, Executable};
+use binary_flavors::{FatBin, Executable, CpuFeatList};
 use proc_exit::{exit, Exit, sysexits::io_to_sysexists};
 
 mod binary_flavors;

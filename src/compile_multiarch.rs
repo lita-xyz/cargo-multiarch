@@ -254,7 +254,6 @@ impl Multiarch {
             })?;
 
         let cpu_features = cargo_config.get_cpu_features();
-        println!("CpuFeatures: {:?}", cpu_features);
         if cpu_features.is_empty() {
             anyhow::bail!(
                 "No CPU arch or CPU features configured in CLI or in Cargo.toml's [package.metadata.multiarch.<CPU ARCH>]"
