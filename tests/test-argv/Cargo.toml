@@ -1,0 +1,9 @@
+[package]
+name = "test-argv"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[profile.release]
+strip = "symbols"
