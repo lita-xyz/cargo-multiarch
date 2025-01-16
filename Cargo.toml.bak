@@ -1,6 +1,0 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/cargo-multiarch",
-    "crates/multiarch-dispatch",
-]
