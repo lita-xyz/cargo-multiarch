@@ -113,11 +113,9 @@ impl Multiarch {
 
     pub fn compile_workspace(&self) -> anyhow::Result<()> {
         let (pkgs, _) = self.workspace.partition_packages(&self.metadata);
+        let pkgs: Vec<_> = pkgs.iter().filter(|&pkg| pkg.targets.iter().any(|target| target.is_bin())).collect();
 
-        if !pkgs
-            .iter()
-            .any(|&package| package.targets.iter().any(|target| target.is_bin()))
-        {
+        if pkgs.is_empty() {
             anyhow::bail!("cargo-multiarch can only build binaries.");
         }
 
