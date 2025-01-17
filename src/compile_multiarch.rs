@@ -51,6 +51,13 @@ pub(crate) struct Multiarch {
     cargo_args: Vec<String>,
 }
 
+struct CompilationConfig<'a> {
+    binary_name: &'a str,
+    cargo_toml: &'a Path,
+    rust_flags: &'a str,
+    pkg_features: &'a str,
+}
+
 impl Multiarch {
     pub(crate) fn from_args(args: Args) -> anyhow::Result<Self> {
         let metadata = args
@@ -113,24 +120,90 @@ impl Multiarch {
 
     pub fn compile_workspace(&self) -> anyhow::Result<()> {
         let (pkgs, _) = self.workspace.partition_packages(&self.metadata);
-        let pkgs: Vec<_> = pkgs.iter().filter(|&pkg| pkg.targets.iter().any(|target| target.is_bin())).collect();
+        let pkgs: Vec<_> = pkgs
+            .iter()
+            .filter(|&pkg| pkg.targets.iter().any(|target| target.is_bin()))
+            .collect();
 
         if pkgs.is_empty() {
             anyhow::bail!("cargo-multiarch can only build binaries.");
         }
 
+        let num_packages: u64 = pkgs
+            .iter()
+            .map(|&pkg| pkg.targets.iter().filter(|target| target.is_bin()).count() as u64)
+            .sum();
+
+        self.progress.set_length(num_packages);
+        self.progress.set_prefix("Building");
+
+        self.progress.disable_steady_tick();
+        self.progress.set_style(
+            ProgressStyle::with_template(if Term::stdout().size().1 > 80 {
+                "{prefix:>12.cyan.bold} [{bar:57}] {pos}/{len} (time remaining {eta}) {wide_msg}"
+            } else {
+                "{prefix:>12.cyan.bold} [{bar:57}] {pos}/{len}"
+            })?
+            .progress_chars("=> "),
+        );
+
         for pkg in pkgs {
-            println!(
+            self.progress.println(format!(
                 "{:>12} {} v{} ({})",
                 style("Compiling").bold().green(),
                 pkg.name,
                 pkg.version,
                 self.metadata.workspace_root
+            ));
+            self.compile_pkg(pkg)?;
+            self.progress.inc(1);
+        }
+        self.progress.finish_and_clear();
+        Ok(())
+    }
+
+    fn compile_pkg(&self, package: &Package) -> anyhow::Result<()> {
+        let cargo_toml = package.manifest_path.as_std_path();
+        let pkg_features = self.pkg_features.features.join(" ");
+        let mut rust_flags = std::env::var("RUSTFLAGS").unwrap_or_default();
+
+        let cargo_config = ConfigMultiArch::new(self.target.clone())
+            .load_cargo_toml(package)
+            .and_then(|cfg| cfg.override_cpus(self.override_cpus.clone()))
+            .and_then(|cfg| {
+                cfg.override_features_lists(BTreeSet::from([self.override_cpufeatures.clone()]))
+            })?;
+
+        let cpu_features = cargo_config.get_cpu_features();
+        if cpu_features.is_empty() {
+            anyhow::bail!(
+                "No CPU arch or CPU features configured in CLI or in Cargo.toml's [package.metadata.multiarch.<CPU ARCH>]"
             );
+        }
 
-            let pkg_multiarch = self.compile_pkg_multi(pkg)?;
+        if self.target.environment == Environment::Msvc {
+            rust_flags.push_str(" -C link-args=/Brepro");
+        };
 
-            let original_filename = pkg_multiarch.bins
+        let mut cfg = CompilationConfig {
+            binary_name: "",
+            cargo_toml,
+            rust_flags: &rust_flags,
+            pkg_features: &pkg_features,
+        };
+
+        for bin_target in package.targets.iter().filter(|target| target.is_bin()) {
+            self.progress.println(format!(
+                "{:>16} {}",
+                style("Compiling").green(),
+                bin_target.name,
+            ));
+            cfg.binary_name = &bin_target.name;
+
+            let pkg_multiarch = self.compile_bin_multiarch(&cfg, cpu_features.iter())?;
+
+            let original_filename = pkg_multiarch
+                .bins
                 .iter()
                 .find_map(|pkg_arch| pkg_arch.original_filename.clone())
                 .unwrap_or_else(|| {
@@ -140,7 +213,7 @@ impl Multiarch {
             if let [build] = &pkg_multiarch.bins[..] {
                 self.handle_single_arch(build, original_filename)?
             } else {
-                self.handle_multi_arch(&pkg_multiarch, original_filename, &pkg.name)?
+                self.handle_multi_arch(&pkg_multiarch, original_filename, &bin_target.name)?
             }
         }
         Ok(())
@@ -179,11 +252,11 @@ impl Multiarch {
             })?;
         }
 
-        println!(
-            "{:>12} 1 version, no dispatcher needed ({})",
-            style("Finished").bold().green(),
+        self.progress.println(format!(
+            "{:>16} 1 version, no dispatcher needed ({})",
+            style("Finished").green(),
             output_path.display()
-        );
+        ));
 
         Ok(())
     }
@@ -204,15 +277,17 @@ impl Multiarch {
         std::fs::write(&artifacts_json, serialized)
             .with_context(|| format!("Failed to write to `{}`", artifacts_json.display()))?;
 
-        println!(
-            "{:>12} {} versions packed into a fat binary",
-            style("Compiling").bold().green(),
+        self.progress.println(format!(
+            "{:>20} {} versions into a fat binary",
+            style("Packing").green(),
             artifacts.bins.len(),
-        );
+        ));
 
-        let fatbin_path =
-            self.fatbin
-                .cargo_build(&self.target.to_string(), &artifacts_json, &original_filename)?;
+        let fatbin_path = self.fatbin.cargo_build(
+            &self.target.to_string(),
+            &artifacts_json,
+            &original_filename,
+        )?;
 
         if let Some(out_dir) = self.outdir.as_deref() {
             std::fs::create_dir_all(out_dir).with_context(|| {
@@ -228,59 +303,27 @@ impl Multiarch {
             })?;
         }
 
-        println!(
-            "{:>12} ({})",
-            style("Finished").bold().green(),
+        self.progress.println(format!(
+            "{:>16} ({})",
+            style("Finished").green(),
             fatbin_path.display()
-        );
+        ));
 
         Ok(())
     }
 
-    /// Compile a single package from the workspace
+    /// Compile a single binary in a single package from the workspace
     /// for a multiset of CPU features
-    fn compile_pkg_multi(&self, package: &Package) -> anyhow::Result<Artifacts> {
-        let cargo_toml = package.manifest_path.as_std_path();
-        let pkg_features = self.pkg_features.features.join(" ");
-        let mut rust_flags = std::env::var("RUSTFLAGS").unwrap_or_default();
-
-        let cargo_config = ConfigMultiArch::new(self.target.clone())
-            .load_cargo_toml(package)
-            .and_then(|cfg| cfg.override_cpus(self.override_cpus.clone()))
-            .and_then(|cfg| {
-                cfg.override_features_lists(BTreeSet::from([self.override_cpufeatures.clone()]))
-            })?;
-
-        let cpu_features = cargo_config.get_cpu_features();
-        if cpu_features.is_empty() {
-            anyhow::bail!(
-                "No CPU arch or CPU features configured in CLI or in Cargo.toml's [package.metadata.multiarch.<CPU ARCH>]"
-            );
-        }
-
-        self.progress.set_length(cpu_features.len() as u64);
-        self.progress.set_prefix("Building");
-
-        if self.target.environment == Environment::Msvc {
-            rust_flags.push_str(" -C link-args=/Brepro");
-        };
-
+    fn compile_bin_multiarch<'a>(
+        &self,
+        cfg: &CompilationConfig,
+        cpu_features: impl Iterator<Item = &'a CpuFeatures>,
+    ) -> anyhow::Result<Artifacts> {
         let mut binaries_desc: Vec<([u8; 32], BinaryDesc)> = Default::default();
 
-        self.progress.disable_steady_tick();
-        self.progress.set_style(
-            ProgressStyle::with_template(if Term::stdout().size().1 > 80 {
-                "{prefix:>12.cyan.bold} [{bar:57}] {pos}/{len} (time remaining {eta}) {wide_msg}"
-            } else {
-                "{prefix:>12.cyan.bold} [{bar:57}] {pos}/{len}"
-            })?
-            .progress_chars("=> "),
-        );
-
         // Because we append CpuFeatures to an empty set, the first build is always the default one.
-        for current_feature_set in cpu_features.iter() {
-            let desc =
-                self.compile_pkg(cargo_toml, &rust_flags, &pkg_features, current_feature_set)?;
+        for current_feature_set in cpu_features {
+            let desc = self.compile_bin(cfg, current_feature_set)?;
             binaries_desc.push(desc);
         }
 
@@ -296,10 +339,8 @@ impl Multiarch {
 
         binaries_desc.dedup_by(|h1, h2| h1.0 == h2.0);
 
-        self.progress.finish_and_clear();
-
         let bins = binaries_desc.into_iter().map(|bd| bd.1).collect();
-        Ok(Artifacts {bins})
+        Ok(Artifacts { bins })
     }
 
     /// Compile a single package from the workspace
@@ -307,28 +348,31 @@ impl Multiarch {
     /// returns the hash of a binary for dedup purposes
     /// and a description of it.
     /// We choose SHA256 for its ubiquitous hardware acceleration on CPUs
-    fn compile_pkg(
+    fn compile_bin(
         &self,
-        cargo_toml: &Path,
-        rustflags: &str,
-        pkg_features: &str,
+        cfg: &CompilationConfig<'_>,
         cpu_features: &CpuFeatures,
     ) -> anyhow::Result<([u8; 32], BinaryDesc)> {
         let arch_flags = cpu_features.to_compiler_flags();
         // TODO: pass the name of a CPU if any was specified for example x86-64-v3 (+avx,+avx2,+bmi,+bmi2,...)
         self.progress.println(format!(
-            "{:>12} {}",
-            style("Compiling").bold().green(),
-            if arch_flags.len() > 0 { &arch_flags } else { "default fallback" }
+            "{:>20} {}",
+            style("Compiling").green(),
+            if arch_flags.len() > 0 {
+                &arch_flags
+            } else {
+                "default fallback"
+            }
         ));
 
         let target_string = self.target.to_string();
 
-        let rust_flags = format!("{rustflags} -Ctarget-feature={arch_flags}");
+        let rust_flags = format!("{} -Ctarget-feature={arch_flags}", { cfg.rust_flags });
         let cargo = CargoBuild::new()
             .arg(format!("--profile={}", self.profile))
+            .arg(format!("--bin={}", cfg.binary_name))
             .target(&target_string)
-            .manifest_path(cargo_toml)
+            .manifest_path(cfg.cargo_toml)
             .args(&self.cargo_args)
             .env("RUSTFLAGS", rust_flags);
 
@@ -337,7 +381,7 @@ impl Multiarch {
         } else if self.pkg_features.no_default_features {
             cargo.no_default_features()
         } else {
-            cargo.features(&pkg_features)
+            cargo.features(&cfg.pkg_features)
         };
 
         let cargo = cargo.exec()?;
@@ -345,9 +389,7 @@ impl Multiarch {
             .find_executable()?
             .ok_or_else(|| anyhow::anyhow!("Failed to find a binary"))?;
 
-        self.progress.inc(1);
-
-        let filename = format!("bin-{}", cpu_features.iter().join("_"));
+        let filename = format!("{}-{}", cfg.binary_name, cpu_features.iter().join("_"));
 
         let output_path_parent = self.target_dir.join(&target_string).join(&self.profile_dir);
         let mut output_path = output_path_parent.join(filename);
