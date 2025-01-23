@@ -171,14 +171,22 @@ impl Multiarch {
             .load_cargo_toml(package)
             .and_then(|cfg| cfg.override_cpus(self.override_cpus.clone()))
             .and_then(|cfg| {
-                cfg.override_features_lists(BTreeSet::from([self.override_cpufeatures.clone()]))
+                if !self.override_cpufeatures.is_empty() {
+                    cfg.override_features_lists(BTreeSet::from([self.override_cpufeatures.clone()]))
+                } else {
+                    Ok(cfg)
+                }
             })?;
 
-        let cpu_features = cargo_config.get_cpu_features();
+        let mut cpu_features = cargo_config.get_cpu_features();
         if cpu_features.is_empty() {
-            anyhow::bail!(
-                "No CPU arch or CPU features configured in CLI or in Cargo.toml's [package.metadata.multiarch.<CPU ARCH>]"
-            );
+            self.progress.println(format!(
+                "{:>12} {} {}",
+                style("Info").blue(),
+                package.name,
+                "No CPU specialization, using default fallback."
+            ));
+            cpu_features = BTreeSet::from([Default::default()]);
         }
 
         if self.target.environment == Environment::Msvc {

@@ -43,7 +43,7 @@ impl<'a> From<&'a Architecture> for &'a ArchitectureWrapper {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Debug, Default)]
 #[repr(transparent)]
 pub(crate) struct CpuFeatures(BTreeSet<String>);
 
@@ -56,6 +56,11 @@ impl FromIterator<String> for CpuFeatures {
 impl CpuFeatures {
     pub(crate) fn iter(&self) -> btree_set::Iter<'_, String> {
         self.0.iter()
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     /// Builds a string of CPU feature flags that can be given to `rustc -C target-feature=` (e.g., `+aes,+avx,+sse`)
@@ -76,7 +81,7 @@ struct ConfigTargetsForArch {
     cpus: BTreeSet<String>,
     // a single <feature list> MUST be sorted and ideally deduped
     // and the list of <feature list> might as well be
-    cpufeatures_lists: BTreeSet<CpuFeatures>,
+    cpufeatures: BTreeSet<CpuFeatures>,
 }
 
 pub(crate) struct ConfigMultiArch {
@@ -123,7 +128,7 @@ impl ConfigMultiArch {
         } else {
             let config_arch = ConfigTargetsForArch {
                 cpus,
-                cpufeatures_lists: BTreeSet::new(),
+                cpufeatures: BTreeSet::new(),
             };
             let _ = self.archs.insert((*arch).into(), config_arch);
         };
@@ -141,11 +146,11 @@ impl ConfigMultiArch {
         let arch = &self.target.architecture;
 
         if let Some(target_config) = self.archs.get_mut(arch.into()) {
-            target_config.cpufeatures_lists = cpufeat_lists;
+            target_config.cpufeatures = cpufeat_lists;
         } else {
             let config_arch = ConfigTargetsForArch {
                 cpus: BTreeSet::new(),
-                cpufeatures_lists: cpufeat_lists,
+                cpufeatures: cpufeat_lists,
             };
             let _ = self.archs.insert((*arch).into(), config_arch);
         };
@@ -171,11 +176,11 @@ impl ConfigMultiArch {
             })
             .collect();
 
-        if target_config.cpufeatures_lists.is_empty() {
+        if target_config.cpufeatures.is_empty() {
             return features_of_cpus;
         } else {
             return features_of_cpus
-                .union(&target_config.cpufeatures_lists)
+                .union(&target_config.cpufeatures)
                 .cloned()
                 .collect();
         }
