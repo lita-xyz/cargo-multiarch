@@ -27,6 +27,13 @@ cargo multiarch --cpufeatures bmi,bmi2,avx2,avx512f
 ```
 
 Important flags are forwarded to `cargo`, in particular be sure to not confuse package-level features `--features` and CPU features `--cpufeatures` (or `-c`)
+### Querying your CPU
+
+cargo-multiarch also includes CPU query command to help pick features, the `--target <TRIPLE>` is optional and default to the host:
+
+- `cargo multiarch --print target-list`, lists all target triple the current rustc can build a binary for.
+- `cargo multiarch --print target-cpus --target <TRIPLE>`, lists all CPUs available for `--target <TRIPLE>` (or the host if unspecified).
+- `cargo multiarch --print target-cpu-features --target <TRIPLE>`, lists all CPU features available for `--target <TRIPLE>` (or the host if unspecified).
 
 ### With Cargo.toml presets
 
