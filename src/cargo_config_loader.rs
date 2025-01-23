@@ -53,6 +53,13 @@ impl FromIterator<String> for CpuFeatures {
     }
 }
 
+pub(crate) fn has_no_features(list: &BTreeSet<CpuFeatures>) -> bool {
+    list.is_empty() || list.len() == 1 && {
+        // Clap parser will put an empty string here
+        list.last().unwrap().is_empty()
+    }
+}
+
 impl CpuFeatures {
     pub(crate) fn iter(&self) -> btree_set::Iter<'_, String> {
         self.0.iter()
@@ -60,7 +67,12 @@ impl CpuFeatures {
 
     #[inline(always)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.0.is_empty() || {
+            // Clap parser will put an empty string here
+            self.0.len() == 1 && {
+                self.0.last().unwrap() == ""
+            }
+        }
     }
 
     /// Builds a string of CPU feature flags that can be given to `rustc -C target-feature=` (e.g., `+aes,+avx,+sse`)
@@ -76,7 +88,7 @@ impl CpuFeatures {
 /// cargo-multiarch will compile a binary
 /// - per cpu
 /// - and per set of CPU features
-#[derive(PartialEq, Eq, Hash, Debug, Clone, Deserialize)]
+#[derive(Default, PartialEq, Eq, Hash, Debug, Clone, Deserialize)]
 struct ConfigTargetsForArch {
     cpus: BTreeSet<String>,
     // a single <feature list> MUST be sorted and ideally deduped
@@ -84,6 +96,7 @@ struct ConfigTargetsForArch {
     cpufeatures: BTreeSet<CpuFeatures>,
 }
 
+#[derive(Debug)]
 pub(crate) struct ConfigMultiArch {
     target: Triple,
     archs: HashMap<ArchitectureWrapper, ConfigTargetsForArch>,
@@ -139,7 +152,7 @@ impl ConfigMultiArch {
         mut self,
         cpufeat_lists: BTreeSet<CpuFeatures>,
     ) -> anyhow::Result<Self> {
-        if cpufeat_lists.is_empty() {
+        if has_no_features(&cpufeat_lists) {
             return Ok(self);
         };
 
@@ -174,9 +187,10 @@ impl ConfigMultiArch {
                 Rustc::get_cpufeatures_for_programs(Some(&self.target.to_string()), Some(&cpu))
                     .map(|list| CpuFeatures::from_iter(list))
             })
+            .filter(|list| !list.is_empty())
             .collect();
 
-        if target_config.cpufeatures.is_empty() {
+        if has_no_features(&target_config.cpufeatures) {
             return features_of_cpus;
         } else {
             return features_of_cpus

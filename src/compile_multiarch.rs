@@ -171,23 +171,10 @@ impl Multiarch {
             .load_cargo_toml(package)
             .and_then(|cfg| cfg.override_cpus(self.override_cpus.clone()))
             .and_then(|cfg| {
-                if !self.override_cpufeatures.is_empty() {
-                    cfg.override_features_lists(BTreeSet::from([self.override_cpufeatures.clone()]))
-                } else {
-                    Ok(cfg)
-                }
+                cfg.override_features_lists(BTreeSet::from([self.override_cpufeatures.clone()]))
             })?;
 
-        let mut cpu_features = cargo_config.get_cpu_features();
-        if cpu_features.is_empty() {
-            self.progress.println(format!(
-                "{:>12} {} {}",
-                style("Info").blue(),
-                package.name,
-                "No CPU specialization, using default fallback."
-            ));
-            cpu_features = BTreeSet::from([Default::default()]);
-        }
+        let cpu_features = cargo_config.get_cpu_features();
 
         if self.target.environment == Environment::Msvc {
             rust_flags.push_str(" -C link-args=/Brepro");
@@ -329,7 +316,12 @@ impl Multiarch {
     ) -> anyhow::Result<Artifacts> {
         let mut binaries_desc: Vec<([u8; 32], BinaryDesc)> = Default::default();
 
-        // Because we append CpuFeatures to an empty set, the first build is always the default one.
+        // No features
+        {
+            let desc = self.compile_bin(cfg, &CpuFeatures::default())?;
+            binaries_desc.push(desc);
+        }
+
         for current_feature_set in cpu_features {
             let desc = self.compile_bin(cfg, current_feature_set)?;
             binaries_desc.push(desc);
