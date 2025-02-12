@@ -76,3 +76,7 @@ Other platforms support can be easily added by using a regular temp file instead
 This is a fork of [`cargo-multivers`](https://github.com/ronnychevalier/cargo-multivers).
 
 Motivation and original design departures are documented in [./docs/design_space.md](docs/design_space.md)
+
+## Issue reporting
+
+Any issues report at https://github.com/lita-xyz/valida-releases/issues
